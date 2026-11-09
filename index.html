@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cell Terminal</title>
+<style>
+  :root { --mono: "Courier New", Courier, monospace; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: #000; color: #fff; font-family: var(--mono); font-size: 15px;
+         display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+           padding: 8px 12px; border-bottom: 1px solid #fff; }
+  header h1 { margin: 0; font-size: 15px; font-weight: normal; }
+  header .spacer { flex: 1; }
+  button { font: inherit; background: #000; color: #fff; border: 1px solid #fff;
+           padding: 3px 10px; border-radius: 0; cursor: pointer; }
+  button:hover { background: #fff; color: #000; }
+  #manualBtn:not(.off) { background: #fff; color: #000; }
+  .status { font-size: 15px; }
+
+  main { flex: 1; min-height: 0; display: grid; gap: 0;
+         grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); }
+  .panel { min-height: 0; }
+  .panel h2 { margin: 0; padding: 6px 12px; font-size: 15px; font-weight: normal;
+              border-bottom: 1px solid #fff; }
+
+  #termPanel { display: flex; flex-direction: column; border-right: 1px solid #fff; }
+  #term { flex: 1; overflow-y: auto; padding: 12px; white-space: pre-wrap; line-height: 1.4; }
+  #term .dim { color: #fff; }
+  #term .good, #term .bad, #term .warn, #term .info { color: #fff; }
+  #term .q { color: #fff; }
+  #term .big { color: #fff; }
+  #inputRow { display: flex; align-items: center; gap: 8px; border-top: 1px solid #fff; padding: 8px 12px; }
+  #cmd { flex: 1; background: #000; border: none; outline: none; color: #fff;
+         font: inherit; caret-color: #fff; }
+  #cmd::placeholder { color: #fff; opacity: .5; }
+
+  #right { display: grid; grid-template-rows: auto 1fr; min-height: 0; }
+  #right > .panel:first-child { border-bottom: 1px solid #fff; }
+  #scores { padding: 8px 12px 12px; }
+  .player { display: flex; justify-content: space-between; padding: 2px 0; }
+  .player.active { text-decoration: underline; }
+  .player .pts, .player .pts.neg { color: #fff; }
+  #addRow { display: flex; gap: 8px; margin-top: 10px; }
+  #addRow input { flex: 1; min-width: 0; background: #000; border: 1px solid #fff; color: #fff;
+                  font: inherit; padding: 3px 6px; border-radius: 0; }
+  #addRow input::placeholder { color: #fff; opacity: .5; }
+  #diagramPanel { display: flex; flex-direction: column; }
+  #diagramWrap { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 8px; }
+  #diagram { width: 100%; height: 100%; max-height: 520px; }
+  #caption { padding: 8px 12px 12px; min-height: 48px; border-top: 1px solid #fff; }
+
+  svg text { font-family: var(--mono); }
+  svg .deck { fill: #000; stroke: #fff; stroke-width: 1; }
+  svg .ring { fill: none; stroke: #fff; stroke-width: 1; stroke-dasharray: 3 3; }
+  svg .sock { fill: #000; stroke: #fff; stroke-width: 1; }
+  svg.manual .sock { cursor: pointer; }
+  svg.manual .sock:hover { stroke-width: 2.5; }
+  svg .sock.filled { stroke-width: 2.5; }
+  svg .sock.correct { fill: #fff; stroke: #fff; }
+  svg .sock.wrong { fill: #000; stroke: #fff; stroke-width: 2.5; stroke-dasharray: 4 2; }
+  svg .num { fill: #fff; font-size: 11px; text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+  svg .num.inv { fill: #000; }
+  svg .lbl { fill: #fff; font-size: 9px; text-anchor: middle; pointer-events: none; }
+
+  @media (max-width: 860px) {
+    main { grid-template-columns: 1fr; }
+    #termPanel { min-height: 55vh; border-right: none; border-bottom: 1px solid #fff; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>cell terminal</h1>
+  <span class="status" id="status">[model not connected]</span>
+  <span class="spacer"></span>
+  <button id="connectBtn">connect model</button>
+  <button id="manualBtn" class="off">manual: off</button>
+</header>
+
+<main>
+  <section class="panel" id="termPanel">
+    <h2>terminal</h2>
+    <div id="term"></div>
+    <div id="inputRow"><span>&gt;</span><input id="cmd" autocomplete="off" spellcheck="false" placeholder="card number or 'help'"></div>
+  </section>
+
+  <section id="right">
+    <div class="panel">
+      <h2>scores</h2>
+      <div id="scores">
+        <div id="playerList"></div>
+        <div id="addRow"><input id="newPlayer" placeholder="add player"><button id="addBtn">add</button></div>
+      </div>
+    </div>
+    <div class="panel" id="diagramPanel">
+      <h2>cell map (top view)</h2>
+      <div id="diagramWrap"><svg id="diagram" viewBox="-125 -125 250 250"></svg></div>
+      <div id="caption" class="dim"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+// ------------------------------------------------------------------ data
+const ORGANELLES = [ // index 0 = socket 1. x,y in mm on the deck (y up), rot in degrees
+  { key: "nucleus",       name: "Nucleus",        x: -30, y: 5,   rot: 90  },
+  { key: "nucleolus",     name: "Nucleolus",      x: 2,   y: 5,   rot: 90  },
+  { key: "rough_er",      name: "Rough ER",       x: -22, y: 68,  rot: 0   },
+  { key: "smooth_er",     name: "Smooth ER",      x: 30,  y: 72,  rot: 0   },
+  { key: "golgi",         name: "Golgi Apparatus",x: 62,  y: 30,  rot: 90  },
+  { key: "mitochondria",  name: "Mitochondria",   x: 45,  y: -42, rot: 30  },
+  { key: "lysosome",      name: "Lysosome",       x: 86,  y: -18, rot: 90  },
+  { key: "vacuole",       name: "Vacuole",        x: -10, y: -70, rot: 0   },
+  { key: "cytoskeleton",  name: "Cytoskeleton",   x: -62, y: -50, rot: -35 },
+  { key: "cell_membrane", name: "Cell Membrane",  x: -88, y: 18,  rot: 90  },
+];
+
+const QUESTIONS = {
+  "1":  { question: "I am a stack of flattened sacs known as the cell's \"post office.\"", socket: 5 },
+  "2":  { question: "I break down worn-out organelles and recycle their parts.", socket: 7 },
+  "3":  { question: "I have no membrane of my own and sit inside the control center.", socket: 2 },
+  "4":  { question: "I hold most of the cell's DNA and control the cell's activities.", socket: 1 },
+  "5":  { question: "I am a network of tubes with NO ribosomes, and I store calcium in muscle cells.", socket: 4 },
+  "6":  { question: "I am a dense spot inside the nucleus where ribosomes are made.", socket: 2 },
+  "7":  { question: "I make lipids like phospholipids and steroid hormones.", socket: 4 },
+  "8":  { question: "I am selectively permeable and described by the fluid mosaic model.", socket: 10 },
+  "9":  { question: "I am made of microtubules, microfilaments, and intermediate filaments.", socket: 9 },
+  "10": { question: "I receive vesicles from the ER and ship products to the membrane or lysosomes.", socket: 5 },
+  "11": { question: "I am the outer boundary of an animal cell, with protein channels and pumps.", socket: 10 },
+  "12": { question: "I make most of the cell's ATP through cellular respiration.", socket: 6 },
+  "13": { question: "I am the cell's storage bubble, holding materials until they are needed.", socket: 8 },
+  "14": { question: "I am a phospholipid bilayer that controls what enters and leaves the cell.", socket: 10 },
+  "15": { question: "I am a folded membrane network covered in ribosomes.", socket: 3 },
+  "16": { question: "I am famous as the \"powerhouse of the cell.\"", socket: 6 },
+  "17": { question: "I am wrapped in a double membrane with pores that let mRNA leave.", socket: 1 },
+  "18": { question: "I make ribosomal RNA (rRNA) and assemble ribosome subunits.", socket: 2 },
+  "19": { question: "I connect straight to the nuclear envelope and look bumpy under a microscope.", socket: 3 },
+  "20": { question: "I modify, sort, and package proteins into vesicles.", socket: 5 },
+  "21": { question: "I am a small sac full of digestive enzymes.", socket: 7 },
+  "22": { question: "Plant cells have one huge version of me; animal cells have several small ones.", socket: 8 },
+  "23": { question: "I am a network of protein fibers that gives the cell its shape.", socket: 9 },
+  "24": { question: "I am often called the \"control center\" of the cell.", socket: 1 },
+  "25": { question: "I fuse with vesicles to destroy bacteria the cell has swallowed.", socket: 7 },
+  "26": { question: "Motor proteins use me as tracks to move vesicles around the cell.", socket: 9 },
+  "27": { question: "I make and fold proteins that will be shipped out of the cell or built into membranes.", socket: 3 },
+  "28": { question: "I help break down drugs and poisons, especially in liver cells.", socket: 4 },
+  "29": { question: "I have my own DNA and a folded inner membrane called cristae.", socket: 6 },
+  "30": { question: "I am a sac that stores water, nutrients, and waste.", socket: 8 },
+};
+
+// ------------------------------------------------------------------ state
+const state = {
+  players: [], turn: 0,
+  current: null,          // { num, question, socket }
+  manual: false,
+  port: null, writer: null, connected: false,
+  occupied: new Array(10).fill(-1),   // what the model reports in each socket
+  history: [], histPos: 0,
+};
+
+function save() {
+  try { localStorage.setItem("cellGame", JSON.stringify({ players: state.players, turn: state.turn })); } catch (e) {}
+}
+function load() {
+  try {
+    const d = JSON.parse(localStorage.getItem("cellGame") || "null");
+    if (d && Array.isArray(d.players)) { state.players = d.players; state.turn = d.turn || 0; }
+  } catch (e) {}
+}
+
+// ------------------------------------------------------------------ terminal
+const term = document.getElementById("term");
+const cmdInput = document.getElementById("cmd");
+
+function log(text, cls = "") {
+  const div = document.createElement("div");
+  if (cls) div.className = cls;
+  div.textContent = text;
+  term.appendChild(div);
+  term.scrollTop = term.scrollHeight;
+  return div;
+}
+function typeOut(text, cls) {               // typewriter effect for questions
+  const div = log("", cls);
+  let i = 0;
+  const t = setInterval(() => {
+    div.textContent = text.slice(0, ++i);
+    term.scrollTop = term.scrollHeight;
+    if (i >= text.length) clearInterval(t);
+  }, 18);
+}
+
+function help() {
+  log("COMMANDS", "info");
+  log("  <number>        play that question card (1-30)");
+  log("  add <name>      add a player or team        remove <name>   remove one");
+  log("  next            skip to the next player     skip            drop the current card");
+  log("  reveal          show the answer for the current card");
+  log("  reset           set all scores to 0         clear           clear this screen");
+  log("  manual          toggle manual mode (click the map instead of using the model)");
+  log("  free            let the model check pieces on its own (green/red) until the next card");
+  log("  help            show this list");
+}
+
+// ------------------------------------------------------------------ scoreboard
+const playerList = document.getElementById("playerList");
+function renderScores() {
+  playerList.innerHTML = "";
+  if (state.players.length === 0) {
+    const d = document.createElement("div"); d.className = "dim"; d.style.padding = "6px 8px";
+    d.textContent = "no players yet";
+    playerList.appendChild(d);
+    return;
+  }
+  state.players.forEach((p, i) => {
+    const row = document.createElement("div");
+    row.className = "player" + (i === state.turn ? " active" : "");
+    const name = document.createElement("span"); name.textContent = (i === state.turn ? "> " : "  ") + p.name;
+    const pts = document.createElement("span"); pts.className = "pts" + (p.score < 0 ? " neg" : ""); pts.textContent = p.score;
+    row.append(name, pts);
+    playerList.appendChild(row);
+  });
+}
+function activePlayer() { return state.players[state.turn] || null; }
+function addPlayer(name) {
+  name = name.trim();
+  if (!name) return;
+  state.players.push({ name, score: 0 });
+  save(); renderScores();
+  log(`Player added: ${name}`, "dim");
+}
+function nextTurn() {
+  if (state.players.length) state.turn = (state.turn + 1) % state.players.length;
+  save(); renderScores();
+}
+
+// ------------------------------------------------------------------ diagram
+const svg = document.getElementById("diagram");
+const caption = document.getElementById("caption");
+const NS = "http://www.w3.org/2000/svg";
+const sockEls = [], lblEls = [], numEls = [];
+
+function buildDiagram() {
+  const deck = document.createElementNS(NS, "circle");
+  deck.setAttribute("r", 114); deck.setAttribute("class", "deck"); svg.appendChild(deck);
+  const ring = document.createElementNS(NS, "circle");      // nuclear envelope
+  ring.setAttribute("cx", -15); ring.setAttribute("cy", -5); ring.setAttribute("r", 42);
+  ring.setAttribute("class", "ring"); svg.appendChild(ring);
+
+  ORGANELLES.forEach((o, i) => {
+    const g = document.createElementNS(NS, "g");
+    g.setAttribute("transform", `translate(${o.x} ${-o.y}) rotate(${-o.rot})`);
+    const r = document.createElementNS(NS, "rect");
+    r.setAttribute("x", -17.5); r.setAttribute("y", -12.5); r.setAttribute("width", 35); r.setAttribute("height", 25);
+    r.setAttribute("rx", 12.5); r.setAttribute("class", "sock");
+    r.addEventListener("click", () => { if (state.manual) evaluate(i + 1, null); });
+    g.appendChild(r); svg.appendChild(g); sockEls.push(r);
+
+    const n = document.createElementNS(NS, "text");
+    n.setAttribute("x", o.x); n.setAttribute("y", -o.y); n.setAttribute("class", "num");
+    n.textContent = i + 1; svg.appendChild(n); numEls.push(n);
+
+    const l = document.createElementNS(NS, "text");
+    l.setAttribute("x", o.x); l.setAttribute("y", -o.y + 22); l.setAttribute("class", "lbl");
+    svg.appendChild(l); lblEls.push(l);
+  });
+}
+function clearDiagram() {
+  sockEls.forEach((el, i) => {
+    el.classList.remove("correct", "wrong");
+    el.classList.toggle("filled", state.occupied[i] > 0);
+  });
+  lblEls.forEach(l => (l.textContent = ""));
+  numEls.forEach(n => n.classList.remove("inv"));
+  caption.textContent = "";
+  caption.style.color = "";
+}
+function showResult(answerSocket, placedSocket, placedOrganelle) {
+  clearDiagram();
+  sockEls[answerSocket - 1].classList.add("correct");
+  numEls[answerSocket - 1].classList.add("inv");
+  lblEls[answerSocket - 1].textContent = ORGANELLES[answerSocket - 1].name;
+  if (placedSocket !== answerSocket) {
+    sockEls[placedSocket - 1].classList.add("wrong");
+    lblEls[placedSocket - 1].textContent = "your pick";
+  }
+  let text = `Correct answer: ${ORGANELLES[answerSocket - 1].name} (socket ${answerSocket}).`;
+  if (placedOrganelle !== null && placedOrganelle !== undefined) {
+    const what = placedOrganelle > 0 ? ORGANELLES[placedOrganelle - 1].name : "an unknown piece";
+    text += `  You placed: ${what} in socket ${placedSocket}.`;
+  } else if (placedSocket !== answerSocket) {
+    text += `  You chose socket ${placedSocket} (${ORGANELLES[placedSocket - 1].name}'s spot).`;
+  }
+  caption.textContent = text;
+  caption.className = placedSocket === answerSocket && (placedOrganelle == null || placedOrganelle === answerSocket) ? "good" : "bad";
+}
+
+// ------------------------------------------------------------------ game
+function askCard(num) {
+  const q = QUESTIONS[String(num)];
+  if (!q) { log(`No card #${num}. Cards go from 1 to ${Object.keys(QUESTIONS).length}.`, "warn"); return; }
+  if (state.players.length === 0) addPlayer("Player 1");
+  state.current = { num, ...q };
+  clearDiagram();
+  send("OFF");
+  log("");
+  log(`--- card ${num} ---`, "big");
+  typeOut(q.question, "q");
+  const p = activePlayer();
+  setTimeout(() => {
+    log(`${p ? p.name : "Player"}: which organelle am I? ` +
+        (state.manual ? "Click its location on the map." : "Place it in its correct spot in the cell."), "info");
+    const busy = state.occupied.map((v, i) => (v !== -1 ? i + 1 : null)).filter(Boolean);
+    if (!state.manual && busy.length) log(`(Pieces are still in socket ${busy.join(", ")}, take them out first.)`, "warn");
+  }, q.question.length * 18 + 150);
+}
+
+function evaluate(socket, organelle) {   // organelle: number from the model, or null in manual mode
+  if (!state.current) {
+    if (state.manual) log("Pick a card first: type its number.", "warn");
+    return;
+  }
+  const ans = state.current.socket;
+  const p = activePlayer();
+  const correct = socket === ans && (organelle === null || organelle === ans);
+
+  if (correct) {
+    p.score += 1;
+    log(`CORRECT. ${ORGANELLES[ans - 1].name} goes in socket ${ans}. +1 ${p.name}`, "good");
+    send(`FLASH ${socket} GREEN`);
+  } else {
+    p.score -= 1;
+    let why;
+    if (organelle === 0)                        why = "That piece wasn't recognized (check it is seated).";
+    else if (organelle !== null && organelle === ans) why = `Right organelle, wrong location (socket ${socket}).`;
+    else if (organelle !== null && socket === ans)    why = `Right location, but that piece is the ${ORGANELLES[organelle - 1].name}.`;
+    else if (organelle !== null)                why = `That was the ${ORGANELLES[organelle - 1].name} in socket ${socket}.`;
+    else                                        why = `Socket ${socket} is the ${ORGANELLES[socket - 1].name}'s spot.`;
+    log(`WRONG. ${why} -1 ${p.name}`, "bad");
+    log(`  The answer was: ${ORGANELLES[ans - 1].name} (socket ${ans}).`, "info");
+    send(`FLASH ${socket} RED`);
+    setTimeout(() => send(`LED ${ans} GREEN`), 900);
+  }
+  showResult(ans, socket, organelle);
+  state.current = null;
+  setTimeout(() => send("OFF"), 5000);
+  nextTurn();
+  const np = activePlayer();
+  log(`Next up: ${np.name}. Remove the piece, pick a card and type its number.`, "dim");
+}
+
+// ------------------------------------------------------------------ command line
+function runCommand(raw) {
+  const text = raw.trim();
+  if (!text) return;
+  log("> " + text, "dim");
+  const [word, ...rest] = text.split(/\s+/);
+  const arg = rest.join(" ");
+  const lw = word.toLowerCase();
+
+  if (/^#?\d+$/.test(word)) return askCard(parseInt(word.replace("#", ""), 10));
+  switch (lw) {
+    case "help": case "?": return help();
+    case "add": return arg ? addPlayer(arg) : log("Usage: add <name>", "warn");
+    case "remove": {
+      const i = state.players.findIndex(p => p.name.toLowerCase() === arg.toLowerCase());
+      if (i < 0) return log(`No player named ${arg}.`, "warn");
+      state.players.splice(i, 1); if (state.turn >= state.players.length) state.turn = 0;
+      save(); renderScores(); return log(`Removed ${arg}.`, "dim");
+    }
+    case "next": nextTurn(); return log(`Turn: ${activePlayer() ? activePlayer().name : "-"}`, "info");
+    case "skip": state.current = null; clearDiagram(); return log("Card skipped.", "dim");
+    case "reveal":
+      if (!state.current) return log("No card in play.", "warn");
+      log(`Answer: ${ORGANELLES[state.current.socket - 1].name} (socket ${state.current.socket}).`, "info");
+      showResult(state.current.socket, state.current.socket, null);
+      send(`LED ${state.current.socket} GREEN`);
+      state.current = null; return;
+    case "reset": state.players.forEach(p => (p.score = 0)); state.turn = 0; save(); renderScores(); return log("Scores reset.", "dim");
+    case "clear": term.innerHTML = ""; return;
+    case "manual": return toggleManual();
+    case "free": send("FREE"); return log("Model is checking pieces by itself (green = right spot, red = wrong). Type a card number to go back to the game.", "info");
+    default: log(`Unknown command "${word}". Type help.`, "warn");
+  }
+}
+
+cmdInput.addEventListener("keydown", e => {
+  if (e.key === "Enter") {
+    const v = cmdInput.value; cmdInput.value = "";
+    if (v.trim()) { state.history.push(v); state.histPos = state.history.length; }
+    runCommand(v);
+  } else if (e.key === "ArrowUp") {
+    if (state.histPos > 0) { state.histPos--; cmdInput.value = state.history[state.histPos]; }
+    e.preventDefault();
+  } else if (e.key === "ArrowDown") {
+    if (state.histPos < state.history.length - 1) { state.histPos++; cmdInput.value = state.history[state.histPos]; }
+    else { state.histPos = state.history.length; cmdInput.value = ""; }
+    e.preventDefault();
+  }
+});
+document.addEventListener("click", e => { if (!e.target.closest("input,button,svg")) cmdInput.focus(); });
+
+// ------------------------------------------------------------------ manual mode
+const manualBtn = document.getElementById("manualBtn");
+function toggleManual() {
+  state.manual = !state.manual;
+  manualBtn.textContent = "manual: " + (state.manual ? "on" : "off");
+  manualBtn.classList.toggle("off", !state.manual);
+  svg.classList.toggle("manual", state.manual);
+  log(state.manual ? "Manual mode ON: answer by clicking a location on the map." : "Manual mode OFF: answer by placing pieces in the model.", "info");
+}
+manualBtn.addEventListener("click", toggleManual);
+
+// ------------------------------------------------------------------ Web Serial (talks to the Arduino)
+const statusEl = document.getElementById("status");
+const connectBtn = document.getElementById("connectBtn");
+
+function setStatus(on, text) {
+  statusEl.textContent = "[" + text + "]";
+  statusEl.classList.toggle("on", on);
+  connectBtn.textContent = on ? "disconnect" : "connect model";
+}
+
+async function send(line) {
+  if (!state.writer) return;
+  try { await state.writer.write(new TextEncoder().encode(line + "\n")); } catch (e) {}
+}
+
+function handleLine(line) {
+  line = line.trim();
+  if (!line) return;
+  const parts = line.split(/\s+/);
+  if (parts[0] === "PLACE") {
+    const s = parseInt(parts[1], 10), id = parseInt(parts[2], 10);
+    if (!(s >= 1 && s <= 10)) return;
+    state.occupied[s - 1] = id;
+    sockEls[s - 1].classList.toggle("filled", true);
+    if (state.current && !state.manual) evaluate(s, id);
+    else log(`(model) piece in socket ${s}: ${id > 0 ? ORGANELLES[id - 1].name : "unknown piece"}`, "dim");
+  } else if (parts[0] === "REMOVE") {
+    const s = parseInt(parts[1], 10);
+    if (s >= 1 && s <= 10) { state.occupied[s - 1] = -1; sockEls[s - 1].classList.remove("filled"); }
+  } else if (parts[0] === "READY") {
+    log("Model says hello: " + line, "good");
+  }
+}
+
+async function readLoop(port) {
+  const decoder = new TextDecoderStream();
+  port.readable.pipeTo(decoder.writable).catch(() => {});
+  const reader = decoder.readable.getReader();
+  let buf = "";
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) { handleLine(buf.slice(0, i)); buf = buf.slice(i + 1); }
+    }
+  } catch (e) {
+    log("Lost connection to the model.", "bad");
+  }
+  state.connected = false; state.writer = null;
+  setStatus(false, "model not connected");
+}
+
+async function connect() {
+  if (!("serial" in navigator)) {
+    log("This browser can't talk to the model. Use Google Chrome or Microsoft Edge on a computer.", "bad");
+    log("You can still play with Manual mode (button at the top right).", "info");
+    return;
+  }
+  if (state.connected) {             // disconnect
+    try { state.writer && state.writer.releaseLock(); await state.port.close(); } catch (e) {}
+    state.connected = false; state.writer = null; setStatus(false, "model not connected");
+    return;
+  }
+  try {
+    const port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    state.port = port;
+    state.writer = port.writable.getWriter();
+    state.connected = true;
+    setStatus(true, "model connected");
+    log("Connected to the cell model.", "good");
+    readLoop(port);
+    await send("HELLO");
+    await send("GAME");
+    setTimeout(() => send("STATE"), 300);
+  } catch (e) {
+    log("Could not connect: " + e.message, "bad");
+  }
+}
+connectBtn.addEventListener("click", connect);
+
+// ------------------------------------------------------------------ start
+load();
+buildDiagram();
+renderScores();
+document.getElementById("addBtn").addEventListener("click", () => {
+  const inp = document.getElementById("newPlayer"); addPlayer(inp.value); inp.value = "";
+});
+document.getElementById("newPlayer").addEventListener("keydown", e => {
+  if (e.key === "Enter") { addPlayer(e.target.value); e.target.value = ""; }
+});
+
+log("cell terminal v1.0", "big");
+log("animal cell. 10 organelles. 30 cards.", "dim");
+log("");
+log("1. plug in the model and click [connect model].", "info");
+log("2. add players on the right.", "info");
+log("3. draw a card, type its number, press enter.", "info");
+log("4. place the organelle in its spot in the cell.", "info");
+log("   right organelle, right spot = +1. anything else = -1.", "dim");
+log("");
+log("type help for commands.", "dim");
+cmdInput.focus();
+</script>
+</body>
+</html>
